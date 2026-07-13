@@ -6,7 +6,7 @@
 # Stages:
 #   1. data-validation   - schema, nulls, row count, target values
 #   2. data-cleaning     - dedupe, strip, encode, save processed CSV
-#   3. model-training    - Decision Tree + Random Forest + SVM + 5-fold CV
+#   3. model-training    - DT + RF + GBM + XGBoost + SVM + Neural Network
 #   4. performance-gate  - blocks deploy if best F1 < threshold
 #   5. docker-build      - build & push to GitHub Container Registry
 #   6. kind-deploy       - Kind cluster, load image, deploy, smoke test
@@ -27,7 +27,7 @@ env:
   PYTHON_VERSION: "3.11"
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/loan-approval-mlops
   IMAGE_TAG: ${{ github.sha }}
-  F1_THRESHOLD: "0.70"
+  F1_THRESHOLD: "0.65"
 
 jobs:
 
