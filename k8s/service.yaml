@@ -1,13 +1,24 @@
+# =============================================================================
+# Flask Prediction API - Kubernetes Service
+# =============================================================================
+# NodePort 30500 exposes the Flask API on the Kind node.
+# Use kubectl port-forward for local browser/curl access:
+#   kubectl port-forward service/loan-approval-service 5000:5000
+#   curl http://localhost:5000/health
+# =============================================================================
 apiVersion: v1
 kind: Service
 metadata:
   name: loan-approval-service
+  labels:
+    app: loan-approval
 spec:
   selector:
     app: loan-approval
   ports:
-    - protocol: TCP
+    - name: http
+      protocol: TCP
       port: 5000
       targetPort: 5000
-  # ClusterIP is used for local Kind access via kubectl port-forward
-  type: ClusterIP
+      nodePort: 30500
+  type: NodePort

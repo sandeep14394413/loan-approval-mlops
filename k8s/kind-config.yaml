@@ -1,6 +1,18 @@
-# Kind cluster configuration — 1 control-plane + 1 worker node
+# =============================================================================
+# Kind cluster configuration
+# =============================================================================
+# Extra port mappings expose both services to localhost:
+#   5000 -> Flask prediction API  (loan-approval-service)
+#   5001 -> MLflow Tracking UI    (mlflow-service)
+# =============================================================================
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
-  - role: worker
+    extraPortMappings:
+      - containerPort: 30500
+        hostPort: 5000
+        protocol: TCP
+      - containerPort: 30501
+        hostPort: 5001
+        protocol: TCP

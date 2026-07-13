@@ -57,7 +57,7 @@ jobs:
           retention-days: 7
 
 # =============================================================================
-# STAGE 3 - MODEL TRAINING  (with MLflow)
+# STAGE 3 - MODEL TRAINING + MLFLOW TRACKING
 # =============================================================================
   model-training:
     name: Stage 3 - Model Training + MLflow
@@ -181,33 +181,74 @@ jobs:
     needs: docker-build
     steps:
       - uses: actions/checkout@v4
+
       - name: Download trained models
         uses: actions/download-artifact@v4
         with:
           name: trained-models
           path: models/
+
+      - name: Download MLflow runs
+        uses: actions/download-artifact@v4
+        with:
+          name: mlflow-runs
+          path: mlruns/
+
       - name: Install Kind
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
           chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
+
       - name: Install kubectl
         run: |
           curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
-      - run: kind create cluster --name loan-cluster --config k8s/kind-config.yaml --wait 60s
-      - run: docker build -t loan-approval-mlops:latest .
-      - run: kind load docker-image loan-approval-mlops:latest --name loan-cluster
-      - name: Deploy to Kind
+
+      - name: Create Kind cluster (ports 5000 + 5001 mapped)
+        run: kind create cluster --name loan-cluster --config k8s/kind-config.yaml --wait 60s
+
+      - name: Build Docker image
+        run: docker build -t loan-approval-mlops:latest .
+
+      - name: Load image into Kind
+        run: kind load docker-image loan-approval-mlops:latest --name loan-cluster
+
+      - name: Copy mlruns into Kind node
+        run: |
+          # Copy the mlruns artifact into the Kind control-plane node
+          # so the MLflow UI pod can mount it via hostPath
+          docker cp mlruns/ loan-cluster-control-plane:/mlruns
+
+      - name: Deploy Flask API
         run: |
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
           kubectl rollout status deployment/loan-approval-deployment --timeout=120s
-      - name: Smoke test - health
+
+      - name: Deploy MLflow UI
+        run: |
+          kubectl apply -f k8s/mlflow-deployment.yaml
+          kubectl apply -f k8s/mlflow-service.yaml
+          kubectl rollout status deployment/mlflow-deployment --timeout=120s
+
+      - name: Print service URLs
+        run: |
+          echo "================================================"
+          echo "  Flask API   : http://localhost:5000"
+          echo "  Flask health: http://localhost:5000/health"
+          echo "  Flask predict: http://localhost:5000/predict"
+          echo "  MLflow UI   : http://localhost:5001"
+          echo "================================================"
+
+      - name: Smoke test - Flask health endpoint
         run: |
           kubectl port-forward service/loan-approval-service 5000:5000 &
           sleep 6
+          echo "Testing /health ..."
           curl -sf http://localhost:5000/health
-      - name: Smoke test - predict
+          echo " -> health OK"
+
+      - name: Smoke test - Flask predict endpoint
         run: |
           cat > /tmp/payload.json << 'EOF'
           {"Annual_Income":1200000,"Applicant_Age":35,"Work_Experience":8,
@@ -216,15 +257,33 @@ jobs:
            "Vehicle_Ownership(car)":"yes","Occupation":"Software_Developer",
            "Residence_City":"Bangalore","Residence_State":"Karnataka"}
           EOF
+          echo "Testing /predict ..."
           curl -sf -X POST http://localhost:5000/predict \
             -H "Content-Type: application/json" -d @/tmp/payload.json \
             | python3 scripts/smoke_test.py
+
+      - name: Smoke test - MLflow UI
+        run: |
+          kubectl port-forward service/mlflow-service 5001:5001 &
+          sleep 6
+          echo "Testing MLflow UI ..."
+          curl -sf http://localhost:5001 -o /dev/null
+          echo " -> MLflow UI OK"
+          echo "MLflow experiments:"
+          curl -sf http://localhost:5001/api/2.0/mlflow/experiments/list | python3 -m json.tool || true
+
       - name: Debug logs on failure
         if: failure()
         run: |
+          echo "=== Pods ==="
           kubectl get pods -o wide
-          kubectl describe pods
+          echo "=== Flask logs ==="
           kubectl logs -l app=loan-approval --tail=80 || true
+          echo "=== MLflow logs ==="
+          kubectl logs -l app=mlflow --tail=80 || true
+          echo "=== Describe pods ==="
+          kubectl describe pods
+
       - if: always()
         run: kind delete cluster --name loan-cluster
 
@@ -259,6 +318,12 @@ jobs:
           echo "**Best Model:** ${{ needs.performance-gate.outputs.best_model }}" >> $GITHUB_STEP_SUMMARY
           echo "**Best F1:** ${{ needs.performance-gate.outputs.best_f1 }}" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Service URLs (when cluster is running locally)" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Flask Predict API | http://localhost:5000 |" >> $GITHUB_STEP_SUMMARY
+          echo "| MLflow UI         | http://localhost:5001 |" >> $GITHUB_STEP_SUMMARY
           if [ -f reports/metrics.json ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Full Model Metrics" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,73 @@
+# =============================================================================
+# MLflow Tracking UI - Kubernetes Deployment
+# =============================================================================
+# Runs `mlflow ui` as a separate pod inside the Kind cluster.
+# The mlruns/ directory is mounted from a hostPath volume so the UI
+# reads the same experiment data written by the training pipeline.
+#
+# Access locally:
+#   kubectl port-forward service/mlflow-service 5001:5001
+#   open http://localhost:5001
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-deployment
+  labels:
+    app: mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      containers:
+        - name: mlflow
+          image: loan-approval-mlops:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - mlflow
+            - ui
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "5001"
+            - --backend-store-uri
+            - "/app/mlruns"
+          ports:
+            - containerPort: 5001
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5001
+            initialDelaySeconds: 8
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5001
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: mlruns-volume
+              mountPath: /app/mlruns
+      volumes:
+        - name: mlruns-volume
+          hostPath:
+            # Kind maps /mlruns inside the node from the mlruns/ artifact
+            # loaded via `kind load` step in CI
+            path: /mlruns
+            type: DirectoryOrCreate
