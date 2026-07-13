@@ -12,33 +12,34 @@ Outputs:
   reports/model_metrics.md
 
 Models trained:
-  - Decision Tree        (class_weight=balanced)
-  - Random Forest        (class_weight=balanced)
-  - Support Vector Machine (class_weight=balanced)
-  - Neural Network       (MLPClassifier, sklearn)
+  - Decision Tree
+  - Random Forest
+  - Support Vector Machine
+  - Neural Network (MLPClassifier)
 
-Each model uses a full sklearn Pipeline:
-  preprocessor (impute + scale/encode) -> classifier
+Class imbalance strategy:
+  - Decision Tree / Random Forest / SVM  : class_weight='balanced'
+  - Neural Network (MLPClassifier)       : SMOTE oversampling via
+    imbalanced-learn Pipeline before the classifier step.
+    MLPClassifier does NOT support class_weight or sample_weight
+    in scikit-learn 1.5.x, so SMOTE is the correct alternative.
 
-class_weight='balanced' fixes F1=0.0 on imbalanced datasets.
-MLPClassifier handles imbalance via compute_sample_weight in fit.
-
-Model selection: highest weighted F1 score on held-out test set.
-5-fold cross-validation F1 (weighted) is computed for all models.
+Model selection: highest weighted F1 on held-out test set.
+5-fold CV F1 (weighted) is computed for all models.
 """
 
 import json
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline as ImbPipeline
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.utils.class_weight import compute_sample_weight
 
 from src.config import TARGET_COLUMN, MODEL_DIR, REPORT_PATH
 from src.data_preprocessing import (
@@ -53,20 +54,38 @@ CLEANED_DATA_PATH = Path("data/processed/cleaned.csv")
 METRICS_JSON_PATH = Path("reports/metrics.json")
 
 
-# ---------------------------------------------------------------------------
-# Custom wrapper: MLPClassifier does not support class_weight natively.
-# We pass sample_weight during fit() using a Pipeline-compatible approach.
-# ---------------------------------------------------------------------------
-class BalancedMLPClassifier(MLPClassifier):
+def build_nn_pipeline():
     """
-    MLPClassifier with automatic sample weighting for class imbalance.
-    Computes sample_weight from class distribution and passes it to fit().
-    All other MLP behaviour is unchanged.
-    """
+    Neural Network pipeline using imbalanced-learn ImbPipeline.
+    SMOTE is applied AFTER preprocessing (on transformed numeric data)
+    and BEFORE the MLP classifier.
 
-    def fit(self, X, y):
-        sample_weight = compute_sample_weight(class_weight="balanced", y=y)
-        return super().fit(X, y, sample_weight=sample_weight)
+    ImbPipeline is a drop-in replacement for sklearn Pipeline that
+    correctly applies resamplers only during fit(), not predict().
+    """
+    return ImbPipeline(steps=[
+        ("preprocessor", build_preprocessor()),
+        ("smote", SMOTE(
+            sampling_strategy="minority",
+            k_neighbors=5,
+            random_state=42,
+        )),
+        ("classifier", MLPClassifier(
+            hidden_layer_sizes=(128, 64, 32),
+            activation="relu",
+            solver="adam",
+            alpha=0.001,
+            batch_size=256,
+            learning_rate="adaptive",
+            learning_rate_init=0.001,
+            max_iter=300,
+            early_stopping=True,
+            validation_fraction=0.1,
+            n_iter_no_change=15,
+            random_state=42,
+            verbose=False,
+        )),
+    ])
 
 
 def run_training():
@@ -80,9 +99,9 @@ def run_training():
     df = clean_target(df)
     X, y = get_features_and_target(df)
 
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     # Class distribution diagnostics
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     class_counts = y.value_counts().to_dict()
     total = len(y)
     print(f"Dataset : {total} rows | Features: {list(X.columns)}")
@@ -96,55 +115,54 @@ def run_training():
     imbalance_ratio = round(majority / minority, 2)
     print(f"  Imbalance ratio : {imbalance_ratio}:1")
     if imbalance_ratio > 3:
-        print("  NOTE: Imbalanced dataset detected. Applying class balancing to all models.")
+        print("  NOTE: Imbalanced dataset. DT/RF/SVM use class_weight='balanced'.")
+        print("        Neural Network uses SMOTE oversampling.")
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
     print(f"\nTrain : {len(X_train)} rows | Test : {len(X_test)} rows")
 
-    # -----------------------------------------------------------------------
-    # Model definitions
-    # -----------------------------------------------------------------------
-    candidate_models = {
+    # -------------------------------------------------------------------
+    # Model definitions - standard sklearn Pipeline for DT / RF / SVM
+    # -------------------------------------------------------------------
+    sklearn_models = {
         "decision_tree": DecisionTreeClassifier(
             random_state=42,
-            max_depth=8,
-            min_samples_leaf=5,
+            max_depth=10,
+            min_samples_leaf=3,
+            min_samples_split=6,
             class_weight="balanced",
         ),
         "random_forest": RandomForestClassifier(
             random_state=42,
-            n_estimators=200,
-            max_depth=10,
-            min_samples_leaf=4,
+            n_estimators=300,
+            max_depth=12,
+            min_samples_leaf=3,
+            min_samples_split=6,
             class_weight="balanced",
             n_jobs=-1,
         ),
         "svm": SVC(
             kernel="rbf",
-            C=1.0,
+            C=5.0,
             gamma="scale",
             probability=True,
             random_state=42,
             class_weight="balanced",
         ),
-        "neural_network": BalancedMLPClassifier(
-            hidden_layer_sizes=(128, 64, 32),  # 3-layer network
-            activation="relu",
-            solver="adam",
-            alpha=0.001,                        # L2 regularisation
-            batch_size=256,
-            learning_rate="adaptive",
-            learning_rate_init=0.001,
-            max_iter=300,
-            early_stopping=True,               # stop when val loss stops improving
-            validation_fraction=0.1,
-            n_iter_no_change=15,
-            random_state=42,
-            verbose=False,
-        ),
     }
+
+    candidate_pipelines = {
+        name: Pipeline(steps=[
+            ("preprocessor", build_preprocessor()),
+            ("classifier", model),
+        ])
+        for name, model in sklearn_models.items()
+    }
+
+    # Neural network uses ImbPipeline with SMOTE
+    candidate_pipelines["neural_network"] = build_nn_pipeline()
 
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     results = {}
@@ -152,20 +170,14 @@ def run_training():
     best_score = -1
     best_pipeline = None
 
-    for name, model in candidate_models.items():
-        print(f"\n{'='*55}")
+    for name, pipeline in candidate_pipelines.items():
+        print(f"\n{'=' * 55}")
         print(f"Training : {name}")
-        print(f"{'='*55}")
+        print(f"{'=' * 55}")
 
-        pipeline = Pipeline(steps=[
-            ("preprocessor", build_preprocessor()),
-            ("classifier", model),
-        ])
         pipeline.fit(X_train, y_train)
-
         metrics = evaluate_model(pipeline, X_test, y_test)
 
-        # 5-fold CV weighted F1
         cv_f1 = cross_val_score(
             pipeline, X, y,
             cv=cv,
@@ -174,7 +186,6 @@ def run_training():
         )
         metrics["cv_f1_mean"] = round(float(cv_f1.mean()), 4)
         metrics["cv_f1_std"]  = round(float(cv_f1.std()), 4)
-
         results[name] = metrics
 
         print(f"  Accuracy      : {metrics['accuracy']}")
@@ -195,14 +206,14 @@ def run_training():
 
     save_artifact(best_pipeline, MODEL_DIR / "best_model.joblib")
 
-    print(f"\n{'='*55}")
+    print(f"\n{'=' * 55}")
     print(f"Best model    : {best_name}")
     print(f"Best F1       : {best_score} (weighted)")
-    print(f"{'='*55}")
+    print(f"{'=' * 55}")
 
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     # Save metrics JSON
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     metrics_out = {
         "best_model": best_name,
         "best_f1":    best_score,
@@ -215,12 +226,12 @@ def run_training():
     METRICS_JSON_PATH.write_text(json.dumps(metrics_out, indent=2), encoding="utf-8")
     print(f"Metrics JSON  : {METRICS_JSON_PATH}")
 
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     # Save markdown report
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     lines = [
         "# Model Performance Report\n\n",
-        f"**Best model:** `{best_name}` — weighted F1 = {best_score}\n\n",
+        f"**Best model:** `{best_name}` - weighted F1 = {best_score}\n\n",
         "---\n\n",
     ]
     for name, m in results.items():
