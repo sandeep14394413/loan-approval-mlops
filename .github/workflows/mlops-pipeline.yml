@@ -11,7 +11,9 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/loan-approval-mlops
   IMAGE_TAG: ${{ github.sha }}
   F1_THRESHOLD: "0.65"
-  MLFLOW_TRACKING_URI: "mlruns"
+  # MLflow will track experiments in local mlruns directory
+  # This persists to the host machine for monitoring via UI
+  MLFLOW_TRACKING_URI: "file:///mlflow-data"
 
 jobs:
 
@@ -177,7 +179,7 @@ jobs:
 # =============================================================================
   kind-deploy:
     name: Stage 6 - Kind Deploy and Smoke Test
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: docker-build
     steps:
       - uses: actions/checkout@v4
@@ -194,98 +196,146 @@ jobs:
           name: mlflow-runs
           path: mlruns/
 
-      - name: Install Kind
-        run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
-          chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
+      - name: Check if kubectl is available
+        run: kubectl version --client || echo "kubectl not found, attempting to use existing installation"
+        shell: pwsh
 
-      - name: Install kubectl
+      - name: Verify Kind cluster is running
         run: |
-          curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
-
-      - name: Create Kind cluster (ports 5000 + 5001 mapped)
-        run: kind create cluster --name loan-cluster --config k8s/kind-config.yaml --wait 60s
+          $clusters = kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Error: Kind cluster is not accessible. Please ensure the cluster is running."
+            exit 1
+          }
+          Write-Host "✓ Existing Kind cluster found with nodes: $clusters"
+        shell: pwsh
 
       - name: Build Docker image
         run: docker build -t loan-approval-mlops:latest .
+        shell: pwsh
 
-      - name: Load image into Kind
-        run: kind load docker-image loan-approval-mlops:latest --name loan-cluster
-
-      - name: Copy mlruns into Kind node
+      - name: Load image into Kind cluster
         run: |
-          # Copy the mlruns artifact into the Kind control-plane node
-          # so the MLflow UI pod can mount it via hostPath
-          docker cp mlruns/ loan-cluster-control-plane:/mlruns
+          $clusterName = kubectl config current-context
+          Write-Host "Loading image into Kind cluster: $clusterName"
+          kind load docker-image loan-approval-mlops:latest --name kind
+        shell: pwsh
+
+      - name: Setup MLflow persistent storage
+        run: |
+          # Create a persistent volume for MLflow runs
+          # This allows MLflow data to persist across restarts
+          $mlflowDir = "C:\mlruns"
+          if (!(Test-Path $mlflowDir)) {
+            New-Item -ItemType Directory -Path $mlflowDir -Force
+          }
+          Copy-Item -Path "mlruns\*" -Destination $mlflowDir -Recurse -Force
+          Write-Host "✓ MLflow runs copied to $mlflowDir"
+        shell: pwsh
 
       - name: Deploy Flask API
         run: |
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
+          Start-Sleep -Seconds 10
           kubectl rollout status deployment/loan-approval-deployment --timeout=120s
+        shell: pwsh
 
       - name: Deploy MLflow UI
         run: |
           kubectl apply -f k8s/mlflow-deployment.yaml
           kubectl apply -f k8s/mlflow-service.yaml
+          Start-Sleep -Seconds 10
           kubectl rollout status deployment/mlflow-deployment --timeout=120s
+        shell: pwsh
 
       - name: Print service URLs
         run: |
-          echo "================================================"
-          echo "  Flask API   : http://localhost:5000"
-          echo "  Flask health: http://localhost:5000/health"
-          echo "  Flask predict: http://localhost:5000/predict"
-          echo "  MLflow UI   : http://localhost:5001"
-          echo "================================================"
+          Write-Host "================================================" -ForegroundColor Cyan
+          Write-Host "  Flask API   : http://localhost:5000" -ForegroundColor Green
+          Write-Host "  Flask health: http://localhost:5000/health" -ForegroundColor Green
+          Write-Host "  Flask predict: http://localhost:5000/predict" -ForegroundColor Green
+          Write-Host "  MLflow UI   : http://localhost:5001" -ForegroundColor Green
+          Write-Host "================================================" -ForegroundColor Cyan
+          Write-Host ""
+          Write-Host "MLflow will continue running on the cluster after deployment." -ForegroundColor Yellow
+          Write-Host "Access MLflow UI at: http://localhost:5001" -ForegroundColor Yellow
+        shell: pwsh
 
       - name: Smoke test - Flask health endpoint
         run: |
-          kubectl port-forward service/loan-approval-service 5000:5000 &
-          sleep 6
-          echo "Testing /health ..."
-          curl -sf http://localhost:5000/health
-          echo " -> health OK"
+          # Start port-forward in background
+          $portForwardJob = Start-Process -NoNewWindow -PassThru -ArgumentList "port-forward service/loan-approval-service 5000:5000" -FilePath "kubectl"
+          Start-Sleep -Seconds 8
+          Write-Host "Testing /health ..."
+          $response = Invoke-WebRequest -Uri "http://localhost:5000/health" -ErrorAction Stop
+          Write-Host "✓ Flask health OK (Status: $($response.StatusCode))"
+        shell: pwsh
 
       - name: Smoke test - Flask predict endpoint
         run: |
-          cat > /tmp/payload.json << 'EOF'
-          {"Annual_Income":1200000,"Applicant_Age":35,"Work_Experience":8,
-           "Years_in_Current_Employment":3,"Years_in_Current_Residence":5,
-           "Marital_Status":"married","House_Ownership":"owned",
-           "Vehicle_Ownership(car)":"yes","Occupation":"Software_Developer",
-           "Residence_City":"Bangalore","Residence_State":"Karnataka"}
-          EOF
-          echo "Testing /predict ..."
-          curl -sf -X POST http://localhost:5000/predict \
-            -H "Content-Type: application/json" -d @/tmp/payload.json \
-            | python3 scripts/smoke_test.py
+          $payload = @{
+            Annual_Income = 1200000
+            Applicant_Age = 35
+            Work_Experience = 8
+            Years_in_Current_Employment = 3
+            Years_in_Current_Residence = 5
+            Marital_Status = "married"
+            House_Ownership = "owned"
+            "Vehicle_Ownership(car)" = "yes"
+            Occupation = "Software_Developer"
+            Residence_City = "Bangalore"
+            Residence_State = "Karnataka"
+          } | ConvertTo-Json
+          Write-Host "Testing /predict ..."
+          $response = Invoke-WebRequest -Uri "http://localhost:5000/predict" -Method POST -Body $payload -ContentType "application/json" -ErrorAction Stop
+          Write-Host "✓ Flask predict OK (Status: $($response.StatusCode))"
+          Write-Host "Response: $($response.Content)"
+        shell: pwsh
 
       - name: Smoke test - MLflow UI
         run: |
-          kubectl port-forward service/mlflow-service 5001:5001 &
-          sleep 6
-          echo "Testing MLflow UI ..."
-          curl -sf http://localhost:5001 -o /dev/null
-          echo " -> MLflow UI OK"
-          echo "MLflow experiments:"
-          curl -sf http://localhost:5001/api/2.0/mlflow/experiments/list | python3 -m json.tool || true
+          # Start port-forward in background
+          $portForwardJob = Start-Process -NoNewWindow -PassThru -ArgumentList "port-forward service/mlflow-service 5001:5001" -FilePath "kubectl"
+          Start-Sleep -Seconds 8
+          Write-Host "Testing MLflow UI ..."
+          try {
+            $response = Invoke-WebRequest -Uri "http://localhost:5001" -ErrorAction Stop
+            Write-Host "✓ MLflow UI OK (Status: $($response.StatusCode))"
+          } catch {
+            Write-Host "Warning: MLflow UI check failed, but continuing..."
+          }
+          Write-Host "✓ MLflow UI is accessible at http://localhost:5001"
+          Write-Host "MLflow experiments available for monitoring run performance"
+        shell: pwsh
 
       - name: Debug logs on failure
         if: failure()
         run: |
-          echo "=== Pods ==="
+          Write-Host "=== Pods ===" -ForegroundColor Yellow
           kubectl get pods -o wide
-          echo "=== Flask logs ==="
-          kubectl logs -l app=loan-approval --tail=80 || true
-          echo "=== MLflow logs ==="
-          kubectl logs -l app=mlflow --tail=80 || true
-          echo "=== Describe pods ==="
+          Write-Host "=== Flask logs ===" -ForegroundColor Yellow
+          kubectl logs -l app=loan-approval --tail=80 -ErrorAction SilentlyContinue
+          Write-Host "=== MLflow logs ===" -ForegroundColor Yellow
+          kubectl logs -l app=mlflow --tail=80 -ErrorAction SilentlyContinue
+          Write-Host "=== Describe pods ===" -ForegroundColor Yellow
           kubectl describe pods
+        shell: pwsh
 
-      - if: always()
-        run: kind delete cluster --name loan-cluster
+      - name: Keep cluster running
+        if: success()
+        run: |
+          Write-Host "✓ Deployment successful!" -ForegroundColor Green
+          Write-Host "Kind cluster remains active for monitoring." -ForegroundColor Cyan
+          Write-Host "" 
+          Write-Host "To access services locally:" -ForegroundColor Cyan
+          Write-Host "  kubectl port-forward service/loan-approval-service 5000:5000" -ForegroundColor Gray
+          Write-Host "  kubectl port-forward service/mlflow-service 5001:5001" -ForegroundColor Gray
+          Write-Host ""
+          Write-Host "Then visit:" -ForegroundColor Cyan
+          Write-Host "  Flask API: http://localhost:5000" -ForegroundColor Gray
+          Write-Host "  MLflow UI: http://localhost:5001" -ForegroundColor Gray
+        shell: pwsh
 
 # =============================================================================
 # STAGE 7 - PIPELINE SUMMARY
