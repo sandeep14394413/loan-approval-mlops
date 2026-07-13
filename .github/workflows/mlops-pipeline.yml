@@ -216,8 +216,10 @@ jobs:
 
       - name: Load image into Kind cluster
         run: |
-          $clusterName = kubectl config current-context
-          Write-Host "Loading image into Kind cluster: $clusterName"
+          $context = kubectl config current-context
+          $clusterName = kubectl config view --raw --minify -o jsonpath='{.clusters[0].name}'
+          Write-Host "Context: $context"
+          Write-Host "Cluster name: $clusterName"
           kind load docker-image loan-approval-mlops:latest --name $clusterName
         shell: pwsh
 
