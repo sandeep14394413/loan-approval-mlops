@@ -241,7 +241,7 @@ jobs:
           Start-Sleep -Seconds 15
           Write-Host "Checking deployment status..."
           kubectl get pods -o wide
-          kubectl rollout status deployment/loan-approval-deployment --timeout=180s || {
+          kubectl rollout status deployment/loan-approval-deployment --timeout=180s 2>$null || {
             Write-Host "Rollout failed - checking pod details..."
             kubectl describe pod -l app=loan-approval
             kubectl logs -l app=loan-approval --all-containers=true --tail=50
@@ -328,13 +328,13 @@ jobs:
         if: failure()
         run: |
           Write-Host "=== Pods ===" -ForegroundColor Yellow
-          kubectl get pods -o wide
+          kubectl get pods -o wide 2>$null || Write-Host "Failed to get pods"
           Write-Host "=== Flask logs ===" -ForegroundColor Yellow
-          kubectl logs -l app=loan-approval --tail=80 -ErrorAction SilentlyContinue
+          kubectl logs -l app=loan-approval --tail=100 2>$null || Write-Host "No logs found for Flask"
           Write-Host "=== MLflow logs ===" -ForegroundColor Yellow
-          kubectl logs -l app=mlflow --tail=80 -ErrorAction SilentlyContinue
+          kubectl logs -l app=mlflow --tail=100 2>$null || Write-Host "No logs found for MLflow"
           Write-Host "=== Describe pods ===" -ForegroundColor Yellow
-          kubectl describe pods
+          kubectl describe pods 2>$null || Write-Host "Failed to describe pods"
         shell: pwsh
 
       - name: Keep cluster running
