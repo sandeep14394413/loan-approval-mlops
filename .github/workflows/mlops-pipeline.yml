@@ -279,16 +279,46 @@ jobs:
 
       - name: Smoke test - Flask health endpoint
         run: |
-          # Start port-forward in background
-          $portForwardJob = Start-Process -NoNewWindow -PassThru -ArgumentList "port-forward service/loan-approval-service 5000:5000" -FilePath "kubectl"
-          Start-Sleep -Seconds 8
-          Write-Host "Testing /health ..."
-          $response = Invoke-WebRequest -Uri "http://localhost:5000/health" -ErrorAction Stop
-          Write-Host "✓ Flask health OK (Status: $($response.StatusCode))"
+          Write-Host "Setting up port-forward for Flask API..."
+          # Start port-forward as a background job
+          $job = Start-Job -ScriptBlock {
+            kubectl port-forward service/loan-approval-service 5000:5000
+          }
+          Start-Sleep -Seconds 5
+          
+          # Test health endpoint with retries
+          $maxRetries = 5
+          $retryCount = 0
+          while ($retryCount -lt $maxRetries) {
+            try {
+              Write-Host "Testing /health (attempt $($retryCount + 1)/$maxRetries)..."
+              $response = Invoke-WebRequest -Uri "http://localhost:5000/health" -TimeoutSec 5
+              Write-Host "✓ Flask health OK (Status: $($response.StatusCode))" -ForegroundColor Green
+              break
+            } catch {
+              $retryCount++
+              if ($retryCount -lt $maxRetries) {
+                Write-Host "Retrying in 3 seconds..."
+                Start-Sleep -Seconds 3
+              } else {
+                Write-Host "Health check failed after $maxRetries attempts" -ForegroundColor Red
+                Stop-Job -Job $job
+                exit 1
+              }
+            }
+          }
+          Stop-Job -Job $job
         shell: pwsh
 
       - name: Smoke test - Flask predict endpoint
         run: |
+          Write-Host "Setting up port-forward for Flask API..."
+          # Start port-forward as a background job
+          $job = Start-Job -ScriptBlock {
+            kubectl port-forward service/loan-approval-service 5000:5000
+          }
+          Start-Sleep -Seconds 5
+          
           $payload = @{
             Annual_Income = 1200000
             Applicant_Age = 35
@@ -302,26 +332,50 @@ jobs:
             Residence_City = "Bangalore"
             Residence_State = "Karnataka"
           } | ConvertTo-Json
-          Write-Host "Testing /predict ..."
-          $response = Invoke-WebRequest -Uri "http://localhost:5000/predict" -Method POST -Body $payload -ContentType "application/json" -ErrorAction Stop
-          Write-Host "✓ Flask predict OK (Status: $($response.StatusCode))"
-          Write-Host "Response: $($response.Content)"
+          
+          Write-Host "Testing /predict endpoint..."
+          try {
+            $response = Invoke-WebRequest -Uri "http://localhost:5000/predict" -Method POST -Body $payload -ContentType "application/json" -TimeoutSec 10
+            Write-Host "✓ Flask predict OK (Status: $($response.StatusCode))" -ForegroundColor Green
+            Write-Host "Response: $($response.Content)"
+          } catch {
+            Write-Host "Predict endpoint failed: $_" -ForegroundColor Red
+            Stop-Job -Job $job
+            exit 1
+          }
+          Stop-Job -Job $job
         shell: pwsh
 
       - name: Smoke test - MLflow UI
         run: |
-          # Start port-forward in background
-          $portForwardJob = Start-Process -NoNewWindow -PassThru -ArgumentList "port-forward service/mlflow-service 5001:5001" -FilePath "kubectl"
-          Start-Sleep -Seconds 8
-          Write-Host "Testing MLflow UI ..."
-          try {
-            $response = Invoke-WebRequest -Uri "http://localhost:5001" -ErrorAction Stop
-            Write-Host "✓ MLflow UI OK (Status: $($response.StatusCode))"
-          } catch {
-            Write-Host "Warning: MLflow UI check failed, but continuing..."
+          Write-Host "Setting up port-forward for MLflow UI..."
+          # Start port-forward as a background job
+          $job = Start-Job -ScriptBlock {
+            kubectl port-forward service/mlflow-service 5001:5001
           }
-          Write-Host "✓ MLflow UI is accessible at http://localhost:5001"
-          Write-Host "MLflow experiments available for monitoring run performance"
+          Start-Sleep -Seconds 5
+          
+          # Test MLflow UI with retries
+          $maxRetries = 5
+          $retryCount = 0
+          while ($retryCount -lt $maxRetries) {
+            try {
+              Write-Host "Testing MLflow UI (attempt $($retryCount + 1)/$maxRetries)..."
+              $response = Invoke-WebRequest -Uri "http://localhost:5001" -TimeoutSec 5
+              Write-Host "✓ MLflow UI OK (Status: $($response.StatusCode))" -ForegroundColor Green
+              Write-Host "MLflow is accessible at http://localhost:5001" -ForegroundColor Green
+              break
+            } catch {
+              $retryCount++
+              if ($retryCount -lt $maxRetries) {
+                Write-Host "Retrying in 3 seconds..."
+                Start-Sleep -Seconds 3
+              } else {
+                Write-Host "MLflow UI check failed, but continuing deployment..." -ForegroundColor Yellow
+              }
+            }
+          }
+          Stop-Job -Job $job
         shell: pwsh
 
       - name: Debug logs on failure
