@@ -8,15 +8,16 @@ __pycache__/
 dist/
 build/
 
-# Data — do not commit raw or processed data
+# Data — commit CSV files to trigger the pipeline
+# (remove these lines if you do NOT want data in git)
 data/raw/*.csv
 data/processed/*.csv
 
-# Models — do not commit binary artifacts
+# Models — binary artifacts, do not commit
 models/*.pkl
 models/*.joblib
 
-# Reports and generated files
+# Reports
 reports/*.png
 
 # Notebooks
@@ -27,3 +28,4 @@ reports/*.png
 
 # OS
 .DS_Store
+Thumbs.db
