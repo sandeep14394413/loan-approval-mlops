@@ -218,7 +218,7 @@ jobs:
         run: |
           $clusterName = kubectl config current-context
           Write-Host "Loading image into Kind cluster: $clusterName"
-          kind load docker-image loan-approval-mlops:latest --name kind
+          kind load docker-image loan-approval-mlops:latest --name $clusterName
         shell: pwsh
 
       - name: Setup MLflow persistent storage
