@@ -5,8 +5,8 @@ Checks:
   - CSV file exists
   - Required columns are present
   - Minimum row count threshold
-  - Target column has only expected values
-  - Null percentage per column (warns if > 30%)
+  - Target column contains only expected values (0 and 1)
+  - Null percentage per column (fails if > 50%)
 
 Outputs:
   reports/validation_report.json
@@ -22,7 +22,7 @@ from src.config import RAW_DATA_PATH, TARGET_COLUMN, FEATURE_COLUMNS
 
 REPORT_PATH = Path("reports/validation_report.json")
 MIN_ROWS = 100
-MAX_NULL_PCT = 0.50  # fail if any column has > 50% nulls
+MAX_NULL_PCT = 0.50
 
 
 def validate() -> dict:
@@ -39,7 +39,7 @@ def validate() -> dict:
     report["stats"]["total_columns"] = len(df.columns)
     report["stats"]["columns"] = list(df.columns)
 
-    # 2. Required columns
+    # 2. Required columns check
     required = FEATURE_COLUMNS + [TARGET_COLUMN]
     missing_cols = [c for c in required if c not in df.columns]
     if missing_cols:
@@ -53,13 +53,17 @@ def validate() -> dict:
             f"Dataset has only {len(df)} rows. Minimum required: {MIN_ROWS}."
         )
 
-    # 4. Target values
+    # 4. Target column values
     if TARGET_COLUMN in df.columns:
-        unexpected = set(df[TARGET_COLUMN].dropna().unique()) - {"Y", "N"}
+        unique_vals = set(df[TARGET_COLUMN].dropna().unique())
+        # Accept both int (0,1) and float (0.0,1.0)
+        normalized = {int(v) for v in unique_vals}
+        unexpected = normalized - {0, 1}
         if unexpected:
             report["passed"] = False
             report["errors"].append(
-                f"Unexpected values in target column: {unexpected}"
+                f"Unexpected values in target column '{TARGET_COLUMN}': {unexpected}. "
+                f"Expected: 0 (no default risk) or 1 (default risk)."
             )
         vc = df[TARGET_COLUMN].value_counts().to_dict()
         report["stats"]["target_distribution"] = {str(k): int(v) for k, v in vc.items()}

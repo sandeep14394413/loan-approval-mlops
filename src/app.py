@@ -1,9 +1,15 @@
 """
-Flask REST API for Loan Approval Prediction.
+Flask REST API for Loan Default Risk Prediction.
 
 Endpoints:
   GET  /health   — liveness / readiness check
-  POST /predict  — predict loan approval
+  POST /predict  — predict loan default risk
+
+Required fields match the actual dataset schema:
+  Annual_Income, Applicant_Age, Work_Experience,
+  Years_in_Current_Employment, Years_in_Current_Residence,
+  Marital_Status, House_Ownership, Vehicle_Ownership(car),
+  Occupation, Residence_City, Residence_State
 
 Usage (local):
   python -m src.app
@@ -27,12 +33,23 @@ def health():
 @app.route("/predict", methods=["POST"])
 def make_prediction():
     """
-    Accept a JSON payload with applicant features and return a
-    loan approval prediction.
+    Accept a JSON payload with applicant features and return
+    a loan default risk prediction.
 
-    Required fields: Gender, Married, Dependents, Education,
-    Self_Employed, ApplicantIncome, CoapplicantIncome, LoanAmount,
-    Loan_Amount_Term, Credit_History, Property_Area
+    Example payload:
+    {
+      "Annual_Income": 1200000,
+      "Applicant_Age": 35,
+      "Work_Experience": 8,
+      "Years_in_Current_Employment": 3,
+      "Years_in_Current_Residence": 5,
+      "Marital_Status": "married",
+      "House_Ownership": "owned",
+      "Vehicle_Ownership(car)": "yes",
+      "Occupation": "Software_Developer",
+      "Residence_City": "Bangalore",
+      "Residence_State": "Karnataka"
+    }
     """
     try:
         payload = request.get_json(force=True, silent=True)
@@ -47,7 +64,7 @@ def make_prediction():
         result = predict(input_df)
         return jsonify(result), 200
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
 

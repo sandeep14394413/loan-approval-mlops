@@ -1,33 +1,55 @@
 from pathlib import Path
 
-# Base directory (project root)
+# ---------------------------------------------------------------------------
+# Base paths
+# ---------------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Paths
 RAW_DATA_PATH = BASE_DIR / "data" / "raw" / "applicant-details-for-loan-approve.csv"
-PROCESSED_DATA_PATH = BASE_DIR / "data" / "processed" / "processed.csv"
+PROCESSED_DATA_PATH = BASE_DIR / "data" / "processed" / "cleaned.csv"
 MODEL_DIR = BASE_DIR / "models"
 REPORT_PATH = BASE_DIR / "reports" / "model_metrics.md"
 
+# ---------------------------------------------------------------------------
+# Actual dataset schema
+# Columns: Applicant_ID, Annual_Income, Applicant_Age, Work_Experience,
+#          Marital_Status, House_Ownership, Vehicle_Ownership(car),
+#          Occupation, Residence_City, Residence_State,
+#          Years_in_Current_Employment, Years_in_Current_Residence,
+#          Loan_Default_Risk
+# ---------------------------------------------------------------------------
+
+# Drop this column — it is an identifier, not a feature
+ID_COLUMN = "Applicant_ID"
+
 # Target column
-TARGET_COLUMN = "Loan_Status"
+# Values: 0 = No default risk (loan safe), 1 = Default risk (loan risky)
+TARGET_COLUMN = "Loan_Default_Risk"
 
-# Feature definitions
+# Numeric features
 NUMERIC_FEATURES = [
-    "ApplicantIncome",
-    "CoapplicantIncome",
-    "LoanAmount",
-    "Loan_Amount_Term",
-    "Credit_History",
+    "Annual_Income",
+    "Applicant_Age",
+    "Work_Experience",
+    "Years_in_Current_Employment",
+    "Years_in_Current_Residence",
 ]
 
+# Categorical features
 CATEGORICAL_FEATURES = [
-    "Gender",
-    "Married",
-    "Dependents",
-    "Education",
-    "Self_Employed",
-    "Property_Area",
+    "Marital_Status",
+    "House_Ownership",
+    "Vehicle_Ownership(car)",
+    "Occupation",
+    "Residence_City",
+    "Residence_State",
 ]
 
-FEATURE_COLUMNS = CATEGORICAL_FEATURES + NUMERIC_FEATURES
+FEATURE_COLUMNS = NUMERIC_FEATURES + CATEGORICAL_FEATURES
+
+# ---------------------------------------------------------------------------
+# Target encoding map
+# The target is already numeric (0/1) in this dataset.
+# No Y/N mapping needed. We keep this dict for documentation.
+# ---------------------------------------------------------------------------
+TARGET_MAP = {0: "No Default Risk", 1: "Default Risk"}

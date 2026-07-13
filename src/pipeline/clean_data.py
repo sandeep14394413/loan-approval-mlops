@@ -2,10 +2,12 @@
 Stage 2 — Data Cleaning
 
 Steps:
-  - Drop duplicate rows
+  - Drop the ID column (Applicant_ID)
   - Drop rows where the target column is null
+  - Drop exact duplicate rows
   - Strip whitespace from string columns
-  - Normalize target column values to Y/N (handles lowercase)
+  - Ensure target column is integer 0/1
+  - Keep only feature + target columns
   - Save cleaned dataset to data/processed/cleaned.csv
 
 Outputs:
@@ -16,7 +18,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.config import RAW_DATA_PATH, TARGET_COLUMN, FEATURE_COLUMNS
+from src.config import (
+    RAW_DATA_PATH,
+    TARGET_COLUMN,
+    FEATURE_COLUMNS,
+    ID_COLUMN,
+)
 
 OUT_PATH = Path("data/processed/cleaned.csv")
 
@@ -25,14 +32,16 @@ def clean() -> pd.DataFrame:
     df = pd.read_csv(RAW_DATA_PATH)
     original_rows = len(df)
     print(f"Loaded {original_rows} rows from {RAW_DATA_PATH}")
+    print(f"Columns: {list(df.columns)}")
 
-    # 1. Strip whitespace from all string columns
+    # 1. Drop ID column — not a feature
+    if ID_COLUMN in df.columns:
+        df = df.drop(columns=[ID_COLUMN])
+        print(f"  Dropped ID column: {ID_COLUMN}")
+
+    # 2. Strip whitespace from all string columns
     for col in df.select_dtypes(include="object").columns:
         df[col] = df[col].str.strip()
-
-    # 2. Normalize target values (handle lowercase like 'y', 'n')
-    if TARGET_COLUMN in df.columns:
-        df[TARGET_COLUMN] = df[TARGET_COLUMN].str.upper()
 
     # 3. Drop rows with null target
     before = len(df)
@@ -41,17 +50,19 @@ def clean() -> pd.DataFrame:
     if dropped_target:
         print(f"  Dropped {dropped_target} rows with null target.")
 
-    # 4. Drop exact duplicate rows
+    # 4. Ensure target is integer 0/1
+    df[TARGET_COLUMN] = df[TARGET_COLUMN].astype(int)
+
+    # 5. Drop exact duplicate rows
     before = len(df)
     df = df.drop_duplicates()
     dropped_dupes = before - len(df)
     if dropped_dupes:
         print(f"  Dropped {dropped_dupes} duplicate rows.")
 
-    # 5. Keep only relevant columns
-    keep_cols = FEATURE_COLUMNS + [TARGET_COLUMN]
-    existing_cols = [c for c in keep_cols if c in df.columns]
-    df = df[existing_cols]
+    # 6. Keep only relevant columns
+    keep_cols = [c for c in FEATURE_COLUMNS + [TARGET_COLUMN] if c in df.columns]
+    df = df[keep_cols]
 
     final_rows = len(df)
     print(f"Cleaned dataset: {final_rows} rows ({original_rows - final_rows} total removed).")
