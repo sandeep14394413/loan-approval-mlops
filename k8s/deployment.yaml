@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loan-approval-deployment
+  labels:
+    app: loan-approval
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loan-approval
+  template:
+    metadata:
+      labels:
+        app: loan-approval
+    spec:
+      containers:
+        - name: loan-approval
+          # This image is loaded from your local Docker daemon via:
+          #   kind load docker-image loan-approval-mlops:latest --name loan-cluster
+          image: loan-approval-mlops:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+          # Readiness probe — pod only receives traffic when healthy
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          # Liveness probe — restarts pod if it becomes unhealthy
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            failureThreshold: 3
+          # Resource requests and limits
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

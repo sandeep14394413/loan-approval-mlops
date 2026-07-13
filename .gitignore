@@ -1,0 +1,29 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Data — do not commit raw or processed data
+data/raw/*.csv
+data/processed/*.csv
+
+# Models — do not commit binary artifacts
+models/*.pkl
+models/*.joblib
+
+# Reports and generated files
+reports/*.png
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Env
+.env
+
+# OS
+.DS_Store

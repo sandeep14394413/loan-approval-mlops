@@ -1,0 +1,6 @@
+# Kind cluster configuration — 1 control-plane + 1 worker node
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
