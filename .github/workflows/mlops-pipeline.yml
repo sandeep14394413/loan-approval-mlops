@@ -1,19 +1,19 @@
 # =============================================================================
-# ML PIPELINE — Full Automation Workflow
+# ML PIPELINE - Full Automation Workflow
 # =============================================================================
 # Triggers automatically whenever any file inside data/raw/ is pushed.
 #
 # Stages:
-#   1. data-validation   — schema, nulls, row count, target values
-#   2. data-cleaning     — dedupe, strip, encode, save processed CSV
-#   3. model-training    — Decision Tree + Random Forest + SVM + 5-fold CV
-#   4. performance-gate  — blocks deploy if best F1 < threshold
-#   5. docker-build      — build & push to GitHub Container Registry
-#   6. kind-deploy       — Kind cluster, load image, deploy, smoke test
-#   7. notify            — pipeline summary posted to Actions summary page
+#   1. data-validation   - schema, nulls, row count, target values
+#   2. data-cleaning     - dedupe, strip, encode, save processed CSV
+#   3. model-training    - Decision Tree + Random Forest + SVM + 5-fold CV
+#   4. performance-gate  - blocks deploy if best F1 < threshold
+#   5. docker-build      - build & push to GitHub Container Registry
+#   6. kind-deploy       - Kind cluster, load image, deploy, smoke test
+#   7. notify            - pipeline summary posted to Actions summary page
 # =============================================================================
 
-name: MLOps — Full Automation Pipeline
+name: MLOps - Full Automation Pipeline
 
 on:
   push:
@@ -32,10 +32,10 @@ env:
 jobs:
 
 # =============================================================================
-# STAGE 1 — DATA VALIDATION
+# STAGE 1 - DATA VALIDATION
 # =============================================================================
   data-validation:
-    name: "Stage 1 — Data Validation"
+    name: Stage 1 - Data Validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,10 +59,10 @@ jobs:
           retention-days: 7
 
 # =============================================================================
-# STAGE 2 — DATA CLEANING
+# STAGE 2 - DATA CLEANING
 # =============================================================================
   data-cleaning:
-    name: "Stage 2 — Data Cleaning"
+    name: Stage 2 - Data Cleaning
     runs-on: ubuntu-latest
     needs: data-validation
     steps:
@@ -87,10 +87,10 @@ jobs:
           retention-days: 7
 
 # =============================================================================
-# STAGE 3 — MODEL TRAINING
+# STAGE 3 - MODEL TRAINING
 # =============================================================================
   model-training:
-    name: "Stage 3 — Model Training"
+    name: Stage 3 - Model Training
     runs-on: ubuntu-latest
     needs: data-cleaning
     steps:
@@ -128,10 +128,10 @@ jobs:
           retention-days: 14
 
 # =============================================================================
-# STAGE 4 — PERFORMANCE GATE
+# STAGE 4 - PERFORMANCE GATE
 # =============================================================================
   performance-gate:
-    name: "Stage 4 — Performance Gate"
+    name: Stage 4 - Performance Gate
     runs-on: ubuntu-latest
     needs: model-training
     outputs:
@@ -161,10 +161,10 @@ jobs:
           F1_THRESHOLD: ${{ env.F1_THRESHOLD }}
 
 # =============================================================================
-# STAGE 5 — DOCKER BUILD & PUSH
+# STAGE 5 - DOCKER BUILD & PUSH
 # =============================================================================
   docker-build:
-    name: "Stage 5 — Docker Build & Push"
+    name: Stage 5 - Docker Build and Push
     runs-on: ubuntu-latest
     needs: performance-gate
     permissions:
@@ -201,10 +201,10 @@ jobs:
           cache-to: type=gha,mode=max
 
 # =============================================================================
-# STAGE 6 — KIND DEPLOY + SMOKE TEST
+# STAGE 6 - KIND DEPLOY + SMOKE TEST
 # =============================================================================
   kind-deploy:
-    name: "Stage 6 — Kind Deploy & Smoke Test"
+    name: Stage 6 - Kind Deploy and Smoke Test
     runs-on: ubuntu-latest
     needs: docker-build
     steps:
@@ -241,16 +241,16 @@ jobs:
           kubectl apply -f k8s/service.yaml
           kubectl rollout status deployment/loan-approval-deployment --timeout=120s
 
-      - name: Smoke test — health endpoint
+      - name: Smoke test - health endpoint
         run: |
           kubectl port-forward service/loan-approval-service 5000:5000 &
           sleep 6
-          echo "--- Testing /health ---"
+          echo "Testing /health ..."
           curl -sf http://localhost:5000/health
 
-      - name: Smoke test — predict endpoint
+      - name: Smoke test - predict endpoint
         run: |
-          cat > /tmp/smoke_payload.json << 'EOF'
+          cat > /tmp/smoke_payload.json << 'PAYLOAD'
           {
             "Annual_Income": 1200000,
             "Applicant_Age": 35,
@@ -264,20 +264,12 @@ jobs:
             "Residence_City": "Bangalore",
             "Residence_State": "Karnataka"
           }
-          EOF
-          echo "--- Testing /predict ---"
-          RESPONSE=$(curl -sf -X POST http://localhost:5000/predict \
+          PAYLOAD
+          echo "Testing /predict ..."
+          curl -sf -X POST http://localhost:5000/predict \
             -H "Content-Type: application/json" \
-            -d @/tmp/smoke_payload.json)
-          echo "Response: $RESPONSE"
-          echo "$RESPONSE" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-print('Parsed response:', d)
-assert 'loan_safe' in d, 'ERROR: Missing loan_safe in response'
-assert 'prediction' in d, 'ERROR: Missing prediction in response'
-print('Smoke test PASSED')
-"
+            -d @/tmp/smoke_payload.json \
+            | python3 scripts/smoke_test.py
 
       - name: Debug logs on failure
         if: failure()
@@ -291,10 +283,10 @@ print('Smoke test PASSED')
         run: kind delete cluster --name loan-cluster
 
 # =============================================================================
-# STAGE 7 — PIPELINE SUMMARY
+# STAGE 7 - PIPELINE SUMMARY
 # =============================================================================
   notify:
-    name: "Stage 7 — Pipeline Summary"
+    name: Stage 7 - Pipeline Summary
     runs-on: ubuntu-latest
     needs: [data-validation, data-cleaning, model-training, performance-gate, docker-build, kind-deploy]
     if: always()
