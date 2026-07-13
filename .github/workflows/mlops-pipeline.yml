@@ -241,34 +241,41 @@ jobs:
           kubectl apply -f k8s/service.yaml
           kubectl rollout status deployment/loan-approval-deployment --timeout=120s
 
-      - name: Smoke test — health + predict
+      - name: Smoke test — health endpoint
         run: |
           kubectl port-forward service/loan-approval-service 5000:5000 &
           sleep 6
-
-          echo "--- /health ---"
+          echo "--- Testing /health ---"
           curl -sf http://localhost:5000/health
 
-          echo "--- /predict ---"
-          curl -sf -X POST http://localhost:5000/predict \
+      - name: Smoke test — predict endpoint
+        run: |
+          cat > /tmp/smoke_payload.json << 'EOF'
+          {
+            "Annual_Income": 1200000,
+            "Applicant_Age": 35,
+            "Work_Experience": 8,
+            "Years_in_Current_Employment": 3,
+            "Years_in_Current_Residence": 5,
+            "Marital_Status": "married",
+            "House_Ownership": "owned",
+            "Vehicle_Ownership(car)": "yes",
+            "Occupation": "Software_Developer",
+            "Residence_City": "Bangalore",
+            "Residence_State": "Karnataka"
+          }
+          EOF
+          echo "--- Testing /predict ---"
+          RESPONSE=$(curl -sf -X POST http://localhost:5000/predict \
             -H "Content-Type: application/json" \
-            -d '{
-              "Annual_Income": 1200000,
-              "Applicant_Age": 35,
-              "Work_Experience": 8,
-              "Years_in_Current_Employment": 3,
-              "Years_in_Current_Residence": 5,
-              "Marital_Status": "married",
-              "House_Ownership": "owned",
-              "Vehicle_Ownership(car)": "yes",
-              "Occupation": "Software_Developer",
-              "Residence_City": "Bangalore",
-              "Residence_State": "Karnataka"
-            }' | python3 -c "
+            -d @/tmp/smoke_payload.json)
+          echo "Response: $RESPONSE"
+          echo "$RESPONSE" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-print(d)
-assert 'loan_safe' in d, 'Missing loan_safe in response'
+print('Parsed response:', d)
+assert 'loan_safe' in d, 'ERROR: Missing loan_safe in response'
+assert 'prediction' in d, 'ERROR: Missing prediction in response'
 print('Smoke test PASSED')
 "
 
@@ -314,7 +321,7 @@ print('Smoke test PASSED')
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Best Model:** ${{ needs.performance-gate.outputs.best_model }}" >> $GITHUB_STEP_SUMMARY
           echo "**Best F1:** ${{ needs.performance-gate.outputs.best_f1 }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
           if [ -f reports/metrics.json ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
