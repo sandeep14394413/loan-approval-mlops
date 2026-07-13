@@ -1,26 +1,9 @@
-# =============================================================================
-# ML PIPELINE - Full Automation Workflow
-# =============================================================================
-# Triggers automatically whenever any file inside data/raw/ is pushed.
-#
-# Stages:
-#   1. data-validation   - schema, nulls, row count, target values
-#   2. data-cleaning     - dedupe, strip, encode, save processed CSV
-#   3. model-training    - DT + RF + GBM + XGBoost + SVM + Neural Network
-#   4. performance-gate  - blocks deploy if best F1 < threshold
-#   5. docker-build      - build & push to GitHub Container Registry
-#   6. kind-deploy       - Kind cluster, load image, deploy, smoke test
-#   7. notify            - pipeline summary posted to Actions summary page
-# =============================================================================
-
 name: MLOps - Full Automation Pipeline
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - "data/raw/**"
+    branches: [main]
+    paths: ["data/raw/**"]
   workflow_dispatch:
 
 env:
@@ -28,6 +11,7 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/loan-approval-mlops
   IMAGE_TAG: ${{ github.sha }}
   F1_THRESHOLD: "0.65"
+  MLFLOW_TRACKING_URI: "mlruns"
 
 jobs:
 
@@ -39,20 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-
-      - name: Install dependencies
-        run: pip install --upgrade pip && pip install -r requirements.txt
-
-      - name: Run data validation
-        run: python -m src.pipeline.validate_data
-
-      - name: Upload validation report
-        uses: actions/upload-artifact@v4
+      - run: pip install --upgrade pip && pip install -r requirements.txt
+      - run: python -m src.pipeline.validate_data
+      - uses: actions/upload-artifact@v4
         with:
           name: validation-report
           path: reports/validation_report.json
@@ -67,42 +44,32 @@ jobs:
     needs: data-validation
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run data cleaning
-        run: python -m src.pipeline.clean_data
-
-      - name: Upload processed data
-        uses: actions/upload-artifact@v4
+      - run: pip install -r requirements.txt
+      - run: python -m src.pipeline.clean_data
+      - uses: actions/upload-artifact@v4
         with:
           name: processed-data
           path: data/processed/
           retention-days: 7
 
 # =============================================================================
-# STAGE 3 - MODEL TRAINING
+# STAGE 3 - MODEL TRAINING  (with MLflow)
 # =============================================================================
   model-training:
-    name: Stage 3 - Model Training
+    name: Stage 3 - Model Training + MLflow
     runs-on: ubuntu-latest
     needs: data-cleaning
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt
 
       - name: Download processed data
         uses: actions/download-artifact@v4
@@ -110,8 +77,11 @@ jobs:
           name: processed-data
           path: data/processed/
 
-      - name: Train all models
+      - name: Train all models (MLflow tracking enabled)
         run: python -m src.pipeline.train_pipeline
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          GITHUB_SHA: ${{ github.sha }}
 
       - name: Upload trained models
         uses: actions/upload-artifact@v4
@@ -120,11 +90,25 @@ jobs:
           path: models/
           retention-days: 14
 
-      - name: Upload training metrics
+      - name: Upload MLflow runs
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-runs
+          path: mlruns/
+          retention-days: 30
+
+      - name: Upload training metrics JSON
         uses: actions/upload-artifact@v4
         with:
           name: training-metrics
           path: reports/metrics.json
+          retention-days: 14
+
+      - name: Upload markdown report
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-report
+          path: reports/model_metrics.md
           retention-days: 14
 
 # =============================================================================
@@ -139,21 +123,16 @@ jobs:
       best_f1: ${{ steps.gate.outputs.best_f1 }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
+      - run: pip install -r requirements.txt
       - name: Download training metrics
         uses: actions/download-artifact@v4
         with:
           name: training-metrics
           path: reports/
-
       - name: Run performance gate
         id: gate
         run: python -m src.pipeline.performance_gate
@@ -172,25 +151,18 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-
       - name: Download trained models
         uses: actions/download-artifact@v4
         with:
           name: trained-models
           path: models/
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push
-        uses: docker/build-push-action@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v5
         with:
           context: .
           push: true
@@ -209,77 +181,51 @@ jobs:
     needs: docker-build
     steps:
       - uses: actions/checkout@v4
-
       - name: Download trained models
         uses: actions/download-artifact@v4
         with:
           name: trained-models
           path: models/
-
       - name: Install Kind
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
           chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
-
       - name: Install kubectl
         run: |
           curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
-
-      - name: Create Kind cluster
-        run: kind create cluster --name loan-cluster --config k8s/kind-config.yaml --wait 60s
-
-      - name: Build Docker image for Kind
-        run: docker build -t loan-approval-mlops:latest .
-
-      - name: Load image into Kind
-        run: kind load docker-image loan-approval-mlops:latest --name loan-cluster
-
+      - run: kind create cluster --name loan-cluster --config k8s/kind-config.yaml --wait 60s
+      - run: docker build -t loan-approval-mlops:latest .
+      - run: kind load docker-image loan-approval-mlops:latest --name loan-cluster
       - name: Deploy to Kind
         run: |
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
           kubectl rollout status deployment/loan-approval-deployment --timeout=120s
-
-      - name: Smoke test - health endpoint
+      - name: Smoke test - health
         run: |
           kubectl port-forward service/loan-approval-service 5000:5000 &
           sleep 6
-          echo "Testing /health ..."
           curl -sf http://localhost:5000/health
-
-      - name: Smoke test - predict endpoint
+      - name: Smoke test - predict
         run: |
-          cat > /tmp/smoke_payload.json << 'PAYLOAD'
-          {
-            "Annual_Income": 1200000,
-            "Applicant_Age": 35,
-            "Work_Experience": 8,
-            "Years_in_Current_Employment": 3,
-            "Years_in_Current_Residence": 5,
-            "Marital_Status": "married",
-            "House_Ownership": "owned",
-            "Vehicle_Ownership(car)": "yes",
-            "Occupation": "Software_Developer",
-            "Residence_City": "Bangalore",
-            "Residence_State": "Karnataka"
-          }
-          PAYLOAD
-          echo "Testing /predict ..."
+          cat > /tmp/payload.json << 'EOF'
+          {"Annual_Income":1200000,"Applicant_Age":35,"Work_Experience":8,
+           "Years_in_Current_Employment":3,"Years_in_Current_Residence":5,
+           "Marital_Status":"married","House_Ownership":"owned",
+           "Vehicle_Ownership(car)":"yes","Occupation":"Software_Developer",
+           "Residence_City":"Bangalore","Residence_State":"Karnataka"}
+          EOF
           curl -sf -X POST http://localhost:5000/predict \
-            -H "Content-Type: application/json" \
-            -d @/tmp/smoke_payload.json \
+            -H "Content-Type: application/json" -d @/tmp/payload.json \
             | python3 scripts/smoke_test.py
-
       - name: Debug logs on failure
         if: failure()
         run: |
           kubectl get pods -o wide
           kubectl describe pods
           kubectl logs -l app=loan-approval --tail=80 || true
-
-      - name: Delete Kind cluster
-        if: always()
+      - if: always()
         run: kind delete cluster --name loan-cluster
 
 # =============================================================================
@@ -297,7 +243,6 @@ jobs:
           name: training-metrics
           path: reports/
         continue-on-error: true
-
       - name: Post summary
         run: |
           echo "## MLOps Pipeline Summary" >> $GITHUB_STEP_SUMMARY
@@ -314,7 +259,6 @@ jobs:
           echo "**Best Model:** ${{ needs.performance-gate.outputs.best_model }}" >> $GITHUB_STEP_SUMMARY
           echo "**Best F1:** ${{ needs.performance-gate.outputs.best_f1 }}" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
           if [ -f reports/metrics.json ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Full Model Metrics" >> $GITHUB_STEP_SUMMARY
