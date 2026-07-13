@@ -14,14 +14,14 @@ from pathlib import Path
 ID_COLUMN     = "Applicant_ID"
 TARGET_COLUMN = "Loan_Default_Risk"   # 0 = no default, 1 = default risk
 
-# Raw numeric features
+# Raw numeric features (includes engineered columns added by engineer_features())
 NUMERIC_FEATURES = [
     "Annual_Income",
     "Applicant_Age",
     "Work_Experience",
     "Years_in_Current_Employment",
     "Years_in_Current_Residence",
-    # engineered features (present after engineer_features() runs)
+    # engineered features -- present after engineer_features() runs in train_pipeline
     "income_per_exp_year",
     "age_minus_experience",
     "employment_stability",
@@ -38,15 +38,29 @@ CATEGORICAL_FEATURES = [
     "Residence_State",
 ]
 
+# All feature columns (raw only -- engineered columns are added at runtime)
+RAW_NUMERIC_FEATURES = [
+    "Annual_Income",
+    "Applicant_Age",
+    "Work_Experience",
+    "Years_in_Current_Employment",
+    "Years_in_Current_Residence",
+]
+
 FEATURE_COLUMNS = NUMERIC_FEATURES + CATEGORICAL_FEATURES
+
+# Raw feature columns used in validation (before engineering)
+RAW_FEATURE_COLUMNS = RAW_NUMERIC_FEATURES + CATEGORICAL_FEATURES
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-BASE_DIR    = Path(__file__).resolve().parent.parent
-DATA_DIR    = BASE_DIR / "data"
-MODEL_DIR   = BASE_DIR / "models"
-REPORT_PATH = BASE_DIR / "reports" / "model_metrics.md"
+BASE_DIR           = Path(__file__).resolve().parent.parent
+DATA_DIR           = BASE_DIR / "data"
+RAW_DATA_PATH      = DATA_DIR / "raw" / "loan_data.csv"        # input dataset
+PROCESSED_DATA_PATH = DATA_DIR / "processed" / "cleaned.csv"  # after clean_data stage
+MODEL_DIR          = BASE_DIR / "models"
+REPORT_PATH        = BASE_DIR / "reports" / "model_metrics.md"
 
 # ---------------------------------------------------------------------------
 # API settings
