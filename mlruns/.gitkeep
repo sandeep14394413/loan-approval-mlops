@@ -1,0 +1,2 @@
+# Keep the mlruns directory in git so local MLflow tracking storage exists.
+# Actual run data is not committed here; this folder is reserved for local experiment logs.

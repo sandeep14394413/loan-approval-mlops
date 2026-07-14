@@ -279,19 +279,41 @@ jobs:
 
       - name: Smoke test - Flask and MLflow endpoints
         run: |
-          $flaskForward = Start-Process -FilePath "kubectl" -ArgumentList "port-forward service/loan-approval-service 5000:5000 --address 127.0.0.1" -PassThru -WindowStyle Hidden
-          $mlflowForward = Start-Process -FilePath "kubectl" -ArgumentList "port-forward service/mlflow-service 5001:5001 --address 127.0.0.1" -PassThru -WindowStyle Hidden
+          function Get-FreePort {
+            param([int]$StartPort = 5000, [int]$EndPort = 5100)
+            for ($port = $StartPort; $port -le $EndPort; $port++) {
+              $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
+              try {
+                $listener.Start()
+                return $port
+              } catch {
+                continue
+              } finally {
+                $listener.Stop()
+              }
+            }
+            throw "No free local port found between $StartPort and $EndPort"
+          }
+
+          $flaskLocalPort = Get-FreePort -StartPort 5000 -EndPort 5099
+          $mlflowLocalPort = Get-FreePort -StartPort 5100 -EndPort 5199
+
+          $flaskForward = Start-Process -FilePath "kubectl" -ArgumentList "port-forward service/loan-approval-service $flaskLocalPort:5000 --address 127.0.0.1" -PassThru -WindowStyle Hidden
+          $mlflowForward = Start-Process -FilePath "kubectl" -ArgumentList "port-forward service/mlflow-service $mlflowLocalPort:5001 --address 127.0.0.1" -PassThru -WindowStyle Hidden
+
           Start-Sleep -Seconds 8
-          Write-Host "Started Flask port-forward (PID: $($flaskForward.Id))"
-          Write-Host "Started MLflow port-forward (PID: $($mlflowForward.Id))"
+          Write-Host "Started Flask port-forward (PID: $($flaskForward.Id)) on localhost:$flaskLocalPort"
+          Write-Host "Started MLflow port-forward (PID: $($mlflowForward.Id)) on localhost:$mlflowLocalPort"
 
           try {
-            $maxRetries = 5
+            $maxRetries = 8
             $retryCount = 0
+            $healthUrl = "http://127.0.0.1:$flaskLocalPort/health"
+
             while ($retryCount -lt $maxRetries) {
               try {
                 Write-Host "Testing /health (attempt $($retryCount + 1)/$maxRetries)..."
-                $response = Invoke-WebRequest -Uri "http://127.0.0.1:5000/health" -TimeoutSec 5
+                $response = Invoke-WebRequest -Uri $healthUrl -TimeoutSec 5
                 Write-Host "✓ Flask health OK (Status: $($response.StatusCode))" -ForegroundColor Green
                 break
               } catch {
@@ -322,7 +344,7 @@ jobs:
 
             Write-Host "Testing /predict endpoint..."
             try {
-              $response = Invoke-WebRequest -Uri "http://127.0.0.1:5000/predict" -Method POST -Body $payload -ContentType "application/json" -TimeoutSec 10
+              $response = Invoke-WebRequest -Uri "http://127.0.0.1:$flaskLocalPort/predict" -Method POST -Body $payload -ContentType "application/json" -TimeoutSec 10
               Write-Host "✓ Flask predict OK (Status: $($response.StatusCode))" -ForegroundColor Green
               Write-Host "Response: $($response.Content)"
             } catch {
@@ -330,12 +352,12 @@ jobs:
               exit 1
             }
 
-            $mlflowRetries = 5
+            $mlflowRetries = 8
             $mlflowRetryCount = 0
             while ($mlflowRetryCount -lt $mlflowRetries) {
               try {
                 Write-Host "Testing MLflow UI (attempt $($mlflowRetryCount + 1)/$mlflowRetries)..."
-                $response = Invoke-WebRequest -Uri "http://127.0.0.1:5001" -TimeoutSec 5
+                $response = Invoke-WebRequest -Uri "http://127.0.0.1:$mlflowLocalPort" -TimeoutSec 5
                 Write-Host "✓ MLflow UI OK (Status: $($response.StatusCode))" -ForegroundColor Green
                 Write-Host "MLflow is accessible over localhost" -ForegroundColor Green
                 break
