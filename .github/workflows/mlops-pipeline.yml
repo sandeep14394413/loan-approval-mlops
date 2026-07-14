@@ -277,19 +277,23 @@ jobs:
           Write-Host "Access MLflow UI at: http://localhost:5001" -ForegroundColor Yellow
         shell: pwsh
 
+      - name: Start port-forward for Flask API
+        run: |
+          $job = Start-Job -ScriptBlock {
+            kubectl port-forward service/loan-approval-service 5000:5000 --address 127.0.0.1
+          }
+          Start-Sleep -Seconds 5
+          Write-Host "Port-forward job started: $($job.Id)"
+        shell: pwsh
+
       - name: Smoke test - Flask health endpoint
         run: |
-          Write-Host "Getting Flask pod IP..."
-          $podIP = kubectl get pod -l app=loan-approval -o jsonpath='{.items[0].status.podIP}'
-          Write-Host "Flask pod IP: $podIP"
-          
-          # Test health endpoint directly against pod IP
           $maxRetries = 5
           $retryCount = 0
           while ($retryCount -lt $maxRetries) {
             try {
               Write-Host "Testing /health (attempt $($retryCount + 1)/$maxRetries)..."
-              $response = Invoke-WebRequest -Uri "http://$($podIP):5000/health" -TimeoutSec 5
+              $response = Invoke-WebRequest -Uri "http://127.0.0.1:5000/health" -TimeoutSec 5
               Write-Host "✓ Flask health OK (Status: $($response.StatusCode))" -ForegroundColor Green
               break
             } catch {
@@ -307,10 +311,6 @@ jobs:
 
       - name: Smoke test - Flask predict endpoint
         run: |
-          Write-Host "Getting Flask pod IP..."
-          $podIP = kubectl get pod -l app=loan-approval -o jsonpath='{.items[0].status.podIP}'
-          Write-Host "Flask pod IP: $podIP"
-          
           $payload = @{
             Annual_Income = 1200000
             Applicant_Age = 35
@@ -327,7 +327,7 @@ jobs:
           
           Write-Host "Testing /predict endpoint..."
           try {
-            $response = Invoke-WebRequest -Uri "http://$($podIP):5000/predict" -Method POST -Body $payload -ContentType "application/json" -TimeoutSec 10
+            $response = Invoke-WebRequest -Uri "http://127.0.0.1:5000/predict" -Method POST -Body $payload -ContentType "application/json" -TimeoutSec 10
             Write-Host "✓ Flask predict OK (Status: $($response.StatusCode))" -ForegroundColor Green
             Write-Host "Response: $($response.Content)"
           } catch {
@@ -336,21 +336,26 @@ jobs:
           }
         shell: pwsh
 
+      - name: Start port-forward for MLflow UI
+        run: |
+          $job = Start-Job -ScriptBlock {
+            kubectl port-forward service/mlflow-service 5001:5001 --address 127.0.0.1
+          }
+          Start-Sleep -Seconds 5
+          Write-Host "Port-forward job started: $($job.Id)"
+        shell: pwsh
+
       - name: Smoke test - MLflow UI
         run: |
-          Write-Host "Getting MLflow pod IP..."
-          $podIP = kubectl get pod -l app=mlflow -o jsonpath='{.items[0].status.podIP}'
-          Write-Host "MLflow pod IP: $podIP"
-          
           # Test MLflow UI with retries
           $maxRetries = 5
           $retryCount = 0
           while ($retryCount -lt $maxRetries) {
             try {
               Write-Host "Testing MLflow UI (attempt $($retryCount + 1)/$maxRetries)..."
-              $response = Invoke-WebRequest -Uri "http://$($podIP):5000" -TimeoutSec 5
+              $response = Invoke-WebRequest -Uri "http://127.0.0.1:5001" -TimeoutSec 5
               Write-Host "✓ MLflow UI OK (Status: $($response.StatusCode))" -ForegroundColor Green
-              Write-Host "MLflow is accessible at the pod's internal address" -ForegroundColor Green
+              Write-Host "MLflow is accessible over localhost" -ForegroundColor Green
               break
             } catch {
               $retryCount++
