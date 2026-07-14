@@ -277,94 +277,84 @@ jobs:
           Write-Host "Access MLflow UI at: http://localhost:5001" -ForegroundColor Yellow
         shell: pwsh
 
-      - name: Start port-forward for Flask API
+      - name: Smoke test - Flask and MLflow endpoints
         run: |
-          $job = Start-Job -ScriptBlock {
-            kubectl port-forward service/loan-approval-service 5000:5000 --address 127.0.0.1
-          }
-          Start-Sleep -Seconds 5
-          Write-Host "Port-forward job started: $($job.Id)"
-        shell: pwsh
+          $flaskForward = Start-Process -FilePath "kubectl" -ArgumentList "port-forward service/loan-approval-service 5000:5000 --address 127.0.0.1" -PassThru -WindowStyle Hidden
+          $mlflowForward = Start-Process -FilePath "kubectl" -ArgumentList "port-forward service/mlflow-service 5001:5001 --address 127.0.0.1" -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 8
+          Write-Host "Started Flask port-forward (PID: $($flaskForward.Id))"
+          Write-Host "Started MLflow port-forward (PID: $($mlflowForward.Id))"
 
-      - name: Smoke test - Flask health endpoint
-        run: |
-          $maxRetries = 5
-          $retryCount = 0
-          while ($retryCount -lt $maxRetries) {
-            try {
-              Write-Host "Testing /health (attempt $($retryCount + 1)/$maxRetries)..."
-              $response = Invoke-WebRequest -Uri "http://127.0.0.1:5000/health" -TimeoutSec 5
-              Write-Host "✓ Flask health OK (Status: $($response.StatusCode))" -ForegroundColor Green
-              break
-            } catch {
-              $retryCount++
-              if ($retryCount -lt $maxRetries) {
-                Write-Host "Retrying in 3 seconds..."
-                Start-Sleep -Seconds 3
-              } else {
-                Write-Host "Health check failed after $maxRetries attempts" -ForegroundColor Red
-                exit 1
+          try {
+            $maxRetries = 5
+            $retryCount = 0
+            while ($retryCount -lt $maxRetries) {
+              try {
+                Write-Host "Testing /health (attempt $($retryCount + 1)/$maxRetries)..."
+                $response = Invoke-WebRequest -Uri "http://127.0.0.1:5000/health" -TimeoutSec 5
+                Write-Host "✓ Flask health OK (Status: $($response.StatusCode))" -ForegroundColor Green
+                break
+              } catch {
+                $retryCount++
+                if ($retryCount -lt $maxRetries) {
+                  Write-Host "Retrying in 3 seconds..."
+                  Start-Sleep -Seconds 3
+                } else {
+                  Write-Host "Health check failed after $maxRetries attempts" -ForegroundColor Red
+                  exit 1
+                }
               }
             }
-          }
-        shell: pwsh
 
-      - name: Smoke test - Flask predict endpoint
-        run: |
-          $payload = @{
-            Annual_Income = 1200000
-            Applicant_Age = 35
-            Work_Experience = 8
-            Years_in_Current_Employment = 3
-            Years_in_Current_Residence = 5
-            Marital_Status = "married"
-            House_Ownership = "owned"
-            "Vehicle_Ownership(car)" = "yes"
-            Occupation = "Software_Developer"
-            Residence_City = "Bangalore"
-            Residence_State = "Karnataka"
-          } | ConvertTo-Json
-          
-          Write-Host "Testing /predict endpoint..."
-          try {
-            $response = Invoke-WebRequest -Uri "http://127.0.0.1:5000/predict" -Method POST -Body $payload -ContentType "application/json" -TimeoutSec 10
-            Write-Host "✓ Flask predict OK (Status: $($response.StatusCode))" -ForegroundColor Green
-            Write-Host "Response: $($response.Content)"
-          } catch {
-            Write-Host "Predict endpoint failed: $_" -ForegroundColor Red
-            exit 1
-          }
-        shell: pwsh
+            $payload = @{
+              Annual_Income = 1200000
+              Applicant_Age = 35
+              Work_Experience = 8
+              Years_in_Current_Employment = 3
+              Years_in_Current_Residence = 5
+              Marital_Status = "married"
+              House_Ownership = "owned"
+              "Vehicle_Ownership(car)" = "yes"
+              Occupation = "Software_Developer"
+              Residence_City = "Bangalore"
+              Residence_State = "Karnataka"
+            } | ConvertTo-Json
 
-      - name: Start port-forward for MLflow UI
-        run: |
-          $job = Start-Job -ScriptBlock {
-            kubectl port-forward service/mlflow-service 5001:5001 --address 127.0.0.1
-          }
-          Start-Sleep -Seconds 5
-          Write-Host "Port-forward job started: $($job.Id)"
-        shell: pwsh
-
-      - name: Smoke test - MLflow UI
-        run: |
-          # Test MLflow UI with retries
-          $maxRetries = 5
-          $retryCount = 0
-          while ($retryCount -lt $maxRetries) {
+            Write-Host "Testing /predict endpoint..."
             try {
-              Write-Host "Testing MLflow UI (attempt $($retryCount + 1)/$maxRetries)..."
-              $response = Invoke-WebRequest -Uri "http://127.0.0.1:5001" -TimeoutSec 5
-              Write-Host "✓ MLflow UI OK (Status: $($response.StatusCode))" -ForegroundColor Green
-              Write-Host "MLflow is accessible over localhost" -ForegroundColor Green
-              break
+              $response = Invoke-WebRequest -Uri "http://127.0.0.1:5000/predict" -Method POST -Body $payload -ContentType "application/json" -TimeoutSec 10
+              Write-Host "✓ Flask predict OK (Status: $($response.StatusCode))" -ForegroundColor Green
+              Write-Host "Response: $($response.Content)"
             } catch {
-              $retryCount++
-              if ($retryCount -lt $maxRetries) {
-                Write-Host "Retrying in 3 seconds..."
-                Start-Sleep -Seconds 3
-              } else {
-                Write-Host "MLflow UI check failed, but continuing deployment..." -ForegroundColor Yellow
+              Write-Host "Predict endpoint failed: $_" -ForegroundColor Red
+              exit 1
+            }
+
+            $mlflowRetries = 5
+            $mlflowRetryCount = 0
+            while ($mlflowRetryCount -lt $mlflowRetries) {
+              try {
+                Write-Host "Testing MLflow UI (attempt $($mlflowRetryCount + 1)/$mlflowRetries)..."
+                $response = Invoke-WebRequest -Uri "http://127.0.0.1:5001" -TimeoutSec 5
+                Write-Host "✓ MLflow UI OK (Status: $($response.StatusCode))" -ForegroundColor Green
+                Write-Host "MLflow is accessible over localhost" -ForegroundColor Green
+                break
+              } catch {
+                $mlflowRetryCount++
+                if ($mlflowRetryCount -lt $mlflowRetries) {
+                  Write-Host "Retrying in 3 seconds..."
+                  Start-Sleep -Seconds 3
+                } else {
+                  Write-Host "MLflow UI check failed, but continuing deployment..." -ForegroundColor Yellow
+                }
               }
+            }
+          } finally {
+            if ($flaskForward) {
+              Stop-Process -Id $flaskForward.Id -Force -ErrorAction SilentlyContinue
+            }
+            if ($mlflowForward) {
+              Stop-Process -Id $mlflowForward.Id -Force -ErrorAction SilentlyContinue
             }
           }
         shell: pwsh
