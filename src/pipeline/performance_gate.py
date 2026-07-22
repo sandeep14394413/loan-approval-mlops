@@ -7,7 +7,8 @@ weighted F1 score meets the minimum threshold set by F1_THRESHOLD.
 Blocks deployment if the score is below threshold.
 Sets GitHub Actions outputs: best_model, best_f1.
 
-Models evaluated: Decision Tree, Random Forest, SVM, Neural Network
+Models evaluated: Decision Tree, Random Forest, Gradient Boosting,
+XGBoost, SVM, Neural Network
 """
 
 import json
@@ -35,7 +36,14 @@ def main():
     print(f"  Threshold  : {F1_THRESHOLD}")
     print()
 
-    model_order = ["decision_tree", "random_forest", "svm", "neural_network"]
+    model_order = [
+        "decision_tree",
+        "random_forest",
+        "gradient_boosting",
+        "xgboost",
+        "svm",
+        "neural_network",
+    ]
     for name in model_order:
         if name not in models:
             continue

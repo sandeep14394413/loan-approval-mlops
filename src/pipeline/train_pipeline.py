@@ -185,10 +185,14 @@ def run_training():
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(EXPERIMENT_NAME)
 
-    run_name = (
-        os.getenv("GITHUB_SHA", "")[:8]
+    git_sha = os.getenv("GITHUB_SHA", "local")
+    build_id = (
+        os.getenv("BUILD_ID")
+        or os.getenv("GITHUB_RUN_ID")
+        or os.getenv("GITHUB_RUN_NUMBER")
         or datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     )
+    run_name = f"build-{build_id}-{git_sha[:8] if git_sha != 'local' else 'local'}"
 
     cv  = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     results       = {}
@@ -205,7 +209,11 @@ def run_training():
         mlflow.log_param("train_rows",       len(X_train))
         mlflow.log_param("test_rows",        len(X_test))
         mlflow.log_param("imbalance_ratio",  scale_pos)
-        mlflow.log_param("git_sha",          os.getenv("GITHUB_SHA", "local"))
+        mlflow.log_param("git_sha",          git_sha)
+        mlflow.log_param("build_id",         build_id)
+        mlflow.set_tag("build_id",           build_id)
+        mlflow.set_tag("git_sha",            git_sha)
+        mlflow.set_tag("pipeline_stage",     "model-training")
 
         for name, pipeline in candidate_pipelines.items():
             print(f"\n{'=' * 55}")
@@ -217,6 +225,8 @@ def run_training():
 
                 mlflow.set_tag("model_name",  name)
                 mlflow.set_tag("pipeline_run", parent_run.info.run_id)
+                mlflow.set_tag("build_id", build_id)
+                mlflow.set_tag("git_sha", git_sha)
                 mlflow.log_param("smote_ratio", smote_ratio_map.get(name, 1.0))
 
                 # Log classifier hyperparameters
@@ -293,6 +303,8 @@ def run_training():
         "best_model":  best_name,
         "best_f1":     best_score,
         "mlflow_run":  parent_run.info.run_id,
+        "build_id":    build_id,
+        "git_sha":     git_sha,
         "models": {
             name: {k: v for k, v in m.items() if k != "classification_report"}
             for name, m in results.items()
@@ -306,6 +318,8 @@ def run_training():
     lines = [
         "# Model Performance Report\n\n",
         f"**Best model:** `{best_name}` — weighted F1 = {best_score}\n",
+        f"**Build ID:** `{build_id}`\n",
+        f"**Git SHA:** `{git_sha}`\n",
         f"**MLflow parent run:** `{parent_run.info.run_id}`\n\n",
         "---\n\n",
     ]

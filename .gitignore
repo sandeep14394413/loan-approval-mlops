@@ -19,6 +19,10 @@ models/*.joblib
 
 # Reports
 reports/*.png
+reports/*.json
+
+# MLflow local tracking store
+mlruns/
 
 # Notebooks
 .ipynb_checkpoints/
