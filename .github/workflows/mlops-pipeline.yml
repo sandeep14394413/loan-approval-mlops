@@ -11,6 +11,8 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/loan-approval-mlops
   IMAGE_TAG: ${{ github.sha }}
   F1_THRESHOLD: "0.65"
+  BUILD_ID: ${{ github.run_id }}
+  KIND_CLUSTER_NAME: prod-cluster
   # MLflow tracks experiments in local mlruns directory (relative path)
   # This avoids permission issues and allows persisting to host machine
   MLFLOW_TRACKING_URI: "mlruns"
@@ -83,6 +85,9 @@ jobs:
         run: python -m src.pipeline.train_pipeline
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          BUILD_ID: ${{ env.BUILD_ID }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_SHA: ${{ github.sha }}
 
       - name: Upload trained models
@@ -202,12 +207,15 @@ jobs:
 
       - name: Verify Kind cluster is running
         run: |
-          $clusters = kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Error: Kind cluster is not accessible. Please ensure the cluster is running."
-            exit 1
+          $clusterName = "${{ env.KIND_CLUSTER_NAME }}"
+          $clusters = kind get clusters
+          if ($clusters -notcontains $clusterName) {
+            Write-Host "Kind cluster '$clusterName' not found. Creating it..."
+            kind create cluster --name $clusterName --config k8s/kind-config.yaml
           }
-          Write-Host "✓ Existing Kind cluster found with nodes: $clusters"
+          kubectl config use-context "kind-$clusterName"
+          $nodes = kubectl get nodes -o jsonpath='{.items[*].metadata.name}'
+          Write-Host "✓ Kind cluster '$clusterName' is ready with nodes: $nodes"
         shell: pwsh
 
       - name: Build Docker image
@@ -218,26 +226,34 @@ jobs:
         run: |
           Write-Host "Available Kind clusters:"
           kind get clusters
-          Write-Host "Loading image into prod-cluster..."
-          kind load docker-image loan-approval-mlops:latest --name prod-cluster
+          Write-Host "Loading image into ${{ env.KIND_CLUSTER_NAME }}..."
+          kind load docker-image loan-approval-mlops:latest --name ${{ env.KIND_CLUSTER_NAME }}
         shell: pwsh
 
       - name: Setup MLflow persistent storage
         run: |
-          # Create a persistent volume for MLflow runs
-          # This allows MLflow data to persist across restarts
-          $mlflowDir = "C:\mlruns"
-          if (!(Test-Path $mlflowDir)) {
-            New-Item -ItemType Directory -Path $mlflowDir -Force
+          $clusterName = "${{ env.KIND_CLUSTER_NAME }}"
+          $nodeNames = kind get nodes --name $clusterName
+
+          if (!(Test-Path "mlruns")) {
+            Write-Host "Error: mlruns artifact directory was not downloaded."
+            exit 1
           }
-          Copy-Item -Path "mlruns\*" -Destination $mlflowDir -Recurse -Force
-          Write-Host "✓ MLflow runs copied to $mlflowDir"
+
+          foreach ($nodeName in $nodeNames) {
+            docker exec $nodeName sh -c "rm -rf /mlruns && mkdir -p /mlruns/.trash"
+            docker cp "mlruns/." "${nodeName}:/mlruns"
+            docker exec $nodeName sh -c "mkdir -p /mlruns/.trash"
+            Write-Host "✓ MLflow runs for build ${{ env.BUILD_ID }} copied into Kind node $nodeName:/mlruns"
+          }
         shell: pwsh
 
       - name: Deploy Flask API
         run: |
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
+          kubectl set env deployment/loan-approval-deployment BUILD_ID=${{ env.BUILD_ID }} GIT_SHA=${{ github.sha }}
+          kubectl annotate deployment/loan-approval-deployment ci.github.com/build-id=${{ env.BUILD_ID }} ci.github.com/git-sha=${{ github.sha }} --overwrite
           Start-Sleep -Seconds 15
           Write-Host "Checking deployment status..."
           kubectl get pods -o wide
@@ -253,6 +269,8 @@ jobs:
         run: |
           kubectl apply -f k8s/mlflow-deployment.yaml
           kubectl apply -f k8s/mlflow-service.yaml
+          kubectl set env deployment/mlflow-deployment BUILD_ID=${{ env.BUILD_ID }} GIT_SHA=${{ github.sha }}
+          kubectl annotate deployment/mlflow-deployment ci.github.com/build-id=${{ env.BUILD_ID }} ci.github.com/git-sha=${{ github.sha }} --overwrite
           Start-Sleep -Seconds 15
           Write-Host "Checking MLflow deployment status..."
           kubectl get pods -o wide
@@ -271,6 +289,7 @@ jobs:
           Write-Host "  Flask health: http://localhost:5000/health" -ForegroundColor Green
           Write-Host "  Flask predict: http://localhost:5000/predict" -ForegroundColor Green
           Write-Host "  MLflow UI   : http://localhost:5001" -ForegroundColor Green
+          Write-Host "  Build ID    : ${{ env.BUILD_ID }}" -ForegroundColor Green
           Write-Host "================================================" -ForegroundColor Cyan
           Write-Host ""
           Write-Host "MLflow will continue running on the cluster after deployment." -ForegroundColor Yellow
@@ -443,6 +462,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Best Model:** ${{ needs.performance-gate.outputs.best_model }}" >> $GITHUB_STEP_SUMMARY
           echo "**Best F1:** ${{ needs.performance-gate.outputs.best_f1 }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Build ID:** ${{ env.BUILD_ID }}" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Service URLs (when cluster is running locally)" >> $GITHUB_STEP_SUMMARY
