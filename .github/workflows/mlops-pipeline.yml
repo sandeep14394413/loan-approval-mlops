@@ -11,9 +11,71 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/loan-approval-mlops
   IMAGE_TAG: ${{ github.sha }}
   F1_THRESHOLD: "0.65"
-  MLFLOW_TRACKING_URI: "mlruns"
+  # Centralized MLflow Tracking Server running inside the KinD cluster
+  MLFLOW_TRACKING_URI: "http://127.0.0.1:5000"
 
 jobs:
+
+# =============================================================================
+# STAGE 0 - DEPLOY MLFLOW INFRASTRUCTURE
+# Must run before model-training so the tracking server is reachable.
+# =============================================================================
+  mlflow-infra:
+    name: Stage 0 - Deploy MLflow Infrastructure
+    runs-on: self-hosted
+    outputs:
+      mlflow_ready: ${{ steps.health.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create mlflow namespace
+        run: kubectl apply -f k8s/mlflow-infra/mlflow-server-deployment.yaml --dry-run=client 2>$null; kubectl create namespace mlflow --dry-run=client -o yaml | kubectl apply -f -
+        shell: pwsh
+
+      - name: Deploy PostgreSQL
+        run: kubectl apply -f k8s/mlflow-infra/postgres-deployment.yaml
+        shell: pwsh
+
+      - name: Deploy MinIO
+        run: kubectl apply -f k8s/mlflow-infra/minio-deployment.yaml
+        shell: pwsh
+
+      - name: Deploy MLflow Tracking Server
+        run: kubectl apply -f k8s/mlflow-infra/mlflow-server-deployment.yaml
+        shell: pwsh
+
+      - name: Wait for MLflow server to be ready
+        run: |
+          kubectl rollout status deployment/mlflow-server -n mlflow --timeout=180s
+          Write-Host "MLflow server rollout complete."
+        shell: pwsh
+
+      - name: Port-forward MLflow (background)
+        run: |
+          Start-Process pwsh -ArgumentList "-Command", "kubectl port-forward svc/mlflow-server-service 5000:5000 -n mlflow" -WindowStyle Hidden
+          Start-Sleep -Seconds 5
+        shell: pwsh
+
+      - name: Health-check MLflow
+        id: health
+        run: |
+          $retries = 10
+          for ($i = 1; $i -le $retries; $i++) {
+            try {
+              $response = Invoke-WebRequest -Uri "http://127.0.0.1:5000/health" -UseBasicParsing -TimeoutSec 5
+              if ($response.StatusCode -eq 200) {
+                Write-Host "✓ MLflow Tracking Server is healthy at http://127.0.0.1:5000"
+                echo "ready=true" >> $env:GITHUB_OUTPUT
+                exit 0
+              }
+            } catch {
+              Write-Host "Attempt $i/$retries - MLflow not ready yet, retrying in 10s..."
+              Start-Sleep -Seconds 10
+            }
+          }
+          Write-Host "ERROR: MLflow did not become healthy after $retries attempts." -ForegroundColor Red
+          exit 1
+        shell: pwsh
 
 # =============================================================================
 # STAGE 1 - DATA VALIDATION
@@ -21,6 +83,7 @@ jobs:
   data-validation:
     name: Stage 1 - Data Validation
     runs-on: ubuntu-latest
+    needs: mlflow-infra
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -58,18 +121,23 @@ jobs:
 
 # =============================================================================
 # STAGE 3 - MODEL TRAINING + MLFLOW TRACKING
+# Runs on self-hosted so it can reach the port-forwarded MLflow server.
 # =============================================================================
   model-training:
     name: Stage 3 - Model Training + MLflow
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: data-cleaning
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
+
       - run: pip install -r requirements.txt
+        shell: pwsh
 
       - name: Download processed data
         uses: actions/download-artifact@v4
@@ -79,6 +147,7 @@ jobs:
 
       - name: Train all models (MLflow tracking enabled)
         run: python -m src.pipeline.train_pipeline
+        shell: pwsh
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
           GITHUB_SHA: ${{ github.sha }}
@@ -89,13 +158,6 @@ jobs:
           name: trained-models
           path: models/
           retention-days: 14
-
-      - name: Upload MLflow runs
-        uses: actions/upload-artifact@v4
-        with:
-          name: mlflow-runs
-          path: mlruns/
-          retention-days: 30
 
       - name: Upload training metrics JSON
         uses: actions/upload-artifact@v4
@@ -188,12 +250,6 @@ jobs:
           name: trained-models
           path: models/
 
-      - name: Download MLflow runs
-        uses: actions/download-artifact@v4
-        with:
-          name: mlflow-runs
-          path: mlruns/
-
       - name: Check if kubectl is available
         run: kubectl version --client || echo "kubectl not found, attempting to use existing installation"
         shell: pwsh
@@ -220,30 +276,6 @@ jobs:
           kind load docker-image loan-approval-mlops:latest --name prod-cluster
         shell: pwsh
 
-      - name: Inject mlruns into KinD node via docker cp
-        run: |
-          # KinD nodes are Docker containers — docker cp injects files directly
-          # into the node filesystem so the hostPath volume (/mlruns) is populated.
-          # This is the correct way to get data into a KinD hostPath on Windows.
-          $nodeContainer = docker ps --filter "name=prod-cluster-control-plane" --format "{{.Names}}"
-          if (-not $nodeContainer) {
-            Write-Host "ERROR: Could not find prod-cluster-control-plane container." -ForegroundColor Red
-            exit 1
-          }
-          Write-Host "KinD node container: $nodeContainer"
-
-          # Ensure /mlruns exists inside the node
-          docker exec $nodeContainer mkdir -p /mlruns
-
-          # Copy mlruns content from the runner workspace into the KinD node
-          docker cp "mlruns/." "${nodeContainer}:/mlruns/"
-
-          # Verify the copy succeeded
-          $result = docker exec $nodeContainer ls /mlruns
-          Write-Host "✓ MLflow runs injected into KinD node at /mlruns:"
-          Write-Host $result
-        shell: pwsh
-
       - name: Deploy Flask API
         run: |
           kubectl apply -f k8s/deployment.yaml
@@ -259,32 +291,14 @@ jobs:
           }
         shell: pwsh
 
-      - name: Deploy MLflow UI
-        run: |
-          kubectl apply -f k8s/mlflow-deployment.yaml
-          kubectl apply -f k8s/mlflow-service.yaml
-          Start-Sleep -Seconds 15
-          Write-Host "Checking MLflow deployment status..."
-          kubectl get pods -o wide
-          kubectl rollout status deployment/mlflow-deployment --timeout=180s || {
-            Write-Host "MLflow rollout failed - checking pod details..."
-            kubectl describe pod -l app=mlflow
-            kubectl logs -l app=mlflow --all-containers=true --tail=50
-            exit 1
-          }
-        shell: pwsh
-
       - name: Print service URLs
         run: |
           Write-Host "================================================" -ForegroundColor Cyan
           Write-Host "  Flask API   : http://localhost:5000" -ForegroundColor Green
           Write-Host "  Flask health: http://localhost:5000/health" -ForegroundColor Green
           Write-Host "  Flask predict: http://localhost:5000/predict" -ForegroundColor Green
-          Write-Host "  MLflow UI   : http://localhost:5001" -ForegroundColor Green
+          Write-Host "  MLflow UI   : http://localhost:5001 (port-forward mlflow-server-service)" -ForegroundColor Green
           Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host ""
-          Write-Host "MLflow will continue running on the cluster after deployment." -ForegroundColor Yellow
-          Write-Host "Access MLflow UI at: http://localhost:5001" -ForegroundColor Yellow
         shell: pwsh
 
       - name: Debug logs on failure
@@ -295,14 +309,9 @@ jobs:
           Write-Host "=== Flask logs ===" -ForegroundColor Yellow
           kubectl logs -l app=loan-approval --tail=100 2>$null || Write-Host "No logs found for Flask"
           Write-Host "=== MLflow logs ===" -ForegroundColor Yellow
-          kubectl logs -l app=mlflow --tail=100 2>$null || Write-Host "No logs found for MLflow"
+          kubectl logs -l app=mlflow-server -n mlflow --tail=100 2>$null || Write-Host "No logs found for MLflow"
           Write-Host "=== Describe pods ===" -ForegroundColor Yellow
           kubectl describe pods 2>$null || Write-Host "Failed to describe pods"
-          Write-Host "=== KinD node /mlruns contents ===" -ForegroundColor Yellow
-          $nodeContainer = docker ps --filter "name=prod-cluster-control-plane" --format "{{.Names}}"
-          if ($nodeContainer) {
-            docker exec $nodeContainer ls -la /mlruns 2>$null || Write-Host "/mlruns is empty or missing in KinD node"
-          }
         shell: pwsh
 
       - name: Keep cluster running
@@ -313,15 +322,13 @@ jobs:
           Write-Host ""
           Write-Host "To access services from your machine:" -ForegroundColor Cyan
           Write-Host "  kubectl port-forward service/loan-approval-service 5000:5000" -ForegroundColor Gray
-          Write-Host "  kubectl port-forward service/mlflow-service 5001:5001" -ForegroundColor Gray
+          Write-Host "  kubectl port-forward service/mlflow-server-service 5001:5000 -n mlflow" -ForegroundColor Gray
           Write-Host ""
           Write-Host "Then visit:" -ForegroundColor Cyan
           Write-Host "  Flask API: http://localhost:5000" -ForegroundColor Gray
           Write-Host "  Flask health: http://localhost:5000/health" -ForegroundColor Gray
           Write-Host "  Flask predict: http://localhost:5000/predict" -ForegroundColor Gray
           Write-Host "  MLflow UI: http://localhost:5001" -ForegroundColor Gray
-          Write-Host ""
-          Write-Host "All metrics are being tracked in MLflow for monitoring run performance." -ForegroundColor Cyan
         shell: pwsh
 
 # =============================================================================
@@ -330,7 +337,7 @@ jobs:
   notify:
     name: Stage 7 - Pipeline Summary
     runs-on: ubuntu-latest
-    needs: [data-validation, data-cleaning, model-training, performance-gate, docker-build, kind-deploy]
+    needs: [mlflow-infra, data-validation, data-cleaning, model-training, performance-gate, docker-build, kind-deploy]
     if: always()
     steps:
       - name: Download training metrics
@@ -345,6 +352,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| MLflow Infra     | ${{ needs.mlflow-infra.result }}     |" >> $GITHUB_STEP_SUMMARY
           echo "| Data Validation  | ${{ needs.data-validation.result }}  |" >> $GITHUB_STEP_SUMMARY
           echo "| Data Cleaning    | ${{ needs.data-cleaning.result }}    |" >> $GITHUB_STEP_SUMMARY
           echo "| Model Training   | ${{ needs.model-training.result }}   |" >> $GITHUB_STEP_SUMMARY
@@ -355,6 +363,7 @@ jobs:
           echo "**Best Model:** ${{ needs.performance-gate.outputs.best_model }}" >> $GITHUB_STEP_SUMMARY
           echo "**Best F1:** ${{ needs.performance-gate.outputs.best_f1 }}" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**MLflow Tracking URI:** ${{ env.MLFLOW_TRACKING_URI }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Service URLs (when cluster is running locally)" >> $GITHUB_STEP_SUMMARY
           echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY

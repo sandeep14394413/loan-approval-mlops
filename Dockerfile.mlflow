@@ -1,0 +1,34 @@
+# =============================================================================
+# Dockerfile.mlflow
+# Builds a lightweight MLflow Tracking Server image
+# =============================================================================
+FROM python:3.11-slim
+
+LABEL maintainer="sandeep14394413"
+LABEL description="MLflow Tracking Server with PostgreSQL + MinIO support"
+
+# Install system deps for psycopg2 (PostgreSQL driver)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Pin versions for reproducibility
+RUN pip install --no-cache-dir \
+    mlflow==2.13.0 \
+    psycopg2-binary==2.9.9 \
+    boto3==1.34.0 \
+    pymysql==1.1.0
+
+# MLflow default port
+EXPOSE 5000
+
+# Health-check so Kubernetes readiness/liveness probes work out of the box
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')" || exit 1
+
+# Entrypoint delegates all flags to the k8s manifest command array
+ENTRYPOINT ["mlflow"]
+CMD ["server", "--host=0.0.0.0", "--port=5000"]
